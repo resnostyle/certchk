@@ -34,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DataDog/datadog-go/statsd"
 	"github.com/dustin/go-humanize"
 )
 
@@ -46,6 +47,7 @@ func check(server string, width int) {
 	conn, err := tls.DialWithDialer(dialer, "tcp", server+":443", nil)
 	if err != nil {
 		fmt.Printf("%*s | %v\n", width, server, err)
+		dataDogStatsd(0, server)
 		return
 	}
 	defer conn.Close()
@@ -55,10 +57,25 @@ func check(server string, width int) {
 		if valid == nil {
 			fmt.Printf("%*s | valid, expires on %s (%s)\n", width, server,
 				c.NotAfter.Format("2006-01-02"), humanize.Time(c.NotAfter))
+			duration := (time.Since(c.NotAfter) / 24) * -1
+			dataDogStatsd(duration.Hours(), server)
 		} else {
 			fmt.Printf("%*s | %v\n", width, server, valid)
 		}
 		return
+	}
+}
+
+func dataDogStatsd(dayexpiration float64, server string) {
+	c, err := statsd.New("127.0.0.1:8125")
+	if err != nil {
+		fmt.Println(err)
+	}
+	c.Namespace = "cert_check"
+	server = strings.Replace(server, ".", "_", -1)
+	err = c.Gauge("days.sslexpire."+server, dayexpiration, nil, 1)
+	if err != nil {
+		fmt.Println(err)
 	}
 }
 
@@ -83,15 +100,15 @@ func main() {
 	}
 
 	// actually check
-	fmt.Printf("%*s | Certificate status\n%s-+-%s\n", width, "Server",
-		strings.Repeat("-", width), strings.Repeat("-", 80-width-2))
-	for _, name := range names {
-		check(name, width)
+	for {
+		for _, name := range names {
+			check(name, width)
+		}
+		time.Sleep(120 * time.Minute)
 	}
 }
 
 func getNames() (names []string) {
-
 	// read names from the file
 	if len(*file) > 0 {
 		f, err := os.Open(*file)
